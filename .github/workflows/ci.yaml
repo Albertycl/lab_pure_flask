@@ -1,0 +1,61 @@
+  name: CI                                                                                                                    
+                                                                                                                              
+  on:
+    push:
+      branches: [ main ]
+
+  jobs:
+    build-and-deploy:
+      runs-on: ubuntu-latest
+      steps:
+      # ---- GET THE CODE ----
+      - name: Checkout app repo
+        uses: actions/checkout@v4
+        # GitHub auto-clones your app repo into the VM
+        # after this step, the VM has all your files (backend/, frontend/, etc.)
+
+      # ---- RUN TESTS ----
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+        # the VM starts empty — this installs Python
+
+      - name: Run tests
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+          pytest test_app.py
+        # if tests fail, CI stops here. Nothing gets built or deployed.
+
+      # ---- LOGIN TO GHCR ----
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}         # your GitHub username (Albertycl)
+          password: ${{ secrets.CICD_SECRET }}    # the secret from step 4
+
+      # ---- BUILD AND PUSH IMAGES ----
+      - name: Build and push backend
+        run: |
+          docker build -t ghcr.io/albertycl/pure-flask:${{ github.sha }} .
+          docker push ghcr.io/albertycl/pure-flask:${{ github.sha }}
+        # builds from backend/Dockerfile
+        # tags with commit SHA (e.g. ghcr.io/albertycl/pure-flask :a1b2c3d)
+        # pushes to GitHub Container Registry
+
+      # ---- THE GLUE: UPDATE CONFIG REPO ----
+      - name: Update config repo
+        run: |
+          git clone https://x-access-token:${{ secrets.CICD_SECRET }}@github.com/Albertycl/lab_gitops.git
+          cd lab_gitops
+          sed -i "s/tag: .*/tag: ${{ github.sha }}/" pure-flask/values.yaml
+          git config user.name "CI Bot"
+          git config user.email "ci@github.com"
+          git add .
+          git commit -m "ci: update image tag to ${{ github.sha }}"
+          git push
+        # this is the ONLY connection between the two repos
+        # CI clones the config repo, changes the tag, pushes
+        # Argo CD will detect this push and deploy
